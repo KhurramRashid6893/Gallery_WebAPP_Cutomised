@@ -47,6 +47,7 @@ Install Flask:
 
 ```bash
 pip install flask
+pip install pillow
 ```
 
 ---
