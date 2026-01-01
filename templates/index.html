@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gallery</title>
+<link rel="stylesheet" href="/static/style.css">
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+
+<body>
+
+<div id="uploadOverlay" class="upload-overlay">
+    <div class="spinner"></div>
+    <p>Uploading...</p>
+</div>
+
+<div class="mobile-header">
+    <button onclick="toggleSidebar()">☰</button>
+    <span>Gallery</span>
+    <a href="/logout" style="color:white;text-decoration:none;">Logout</a>
+</div>
+
+<div class="container">
+    
+    <div class="sidebar" id="sidebar">
+        <h3>📁 Library</h3>
+        <a href="/?folder=Root" class="{% if selected_folder == 'Root' and view_mode != 'trash' %}active{% endif %}">Home</a>
+        
+        <h4>Folders</h4>
+        <div class="folder-list">
+            {% for folder in folders %}
+                {% if folder != "Root" %}
+                <a href="/?folder={{ folder }}" class="{% if folder == selected_folder %}active{% endif %}">
+                    {{ folder }}
+                </a>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        <div class="bottom-links">
+            <h4 style="padding: 0 20px; color:#777; font-size: 0.8rem; margin-bottom:10px;">ACTIONS</h4>
+            <button onclick="document.getElementById('fileInput').click()" class="sidebar-btn">📄 Upload Files</button>
+            <button onclick="document.getElementById('folderInput').click()" class="sidebar-btn">📂 Upload Folder</button>
+            
+            <a href="/?view=trash" class="trash-link {% if view_mode == 'trash' %}active{% endif %}" style="margin-top:15px;">
+                🗑 Trash Bin
+            </a>
+        </div>
+        
+        <input type="file" id="fileInput" multiple style="display:none" onchange="handleUpload(this.files)">
+        <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none" onchange="handleUpload(this.files)">
+    </div>
+
+    <div class="main">
+
+        <div class="toolbar">
+            <div class="left-tools">
+                <span id="count">0 selected</span>
+                {% if view_mode == 'trash' %}
+                    <button onclick="restoreSelected()" class="btn-primary">♻ Restore</button>
+                    <button onclick="permanentDelete()" class="btn-danger">🔥 Delete Forever</button>
+                {% else %}
+                    <button onclick="deleteSelected()" class="btn-danger">🗑 Delete Selected</button>
+                {% endif %}
+            </div>
+
+            <div class="right-tools">
+                <form action="/" method="get" id="sortForm">
+                    <input type="hidden" name="folder" value="{{ selected_folder }}">
+                    {% if view_mode == 'trash' %}<input type="hidden" name="view" value="trash">{% endif %}
+                    
+                    <select name="sort" onchange="document.getElementById('sortForm').submit()">
+                        <option value="name" {% if sort_by == 'name' %}selected{% endif %}>Name (A-Z)</option>
+                        <option value="date_desc" {% if sort_by == 'date_desc' %}selected{% endif %}>Date (Newest)</option>
+                        <option value="date_asc" {% if sort_by == 'date_asc' %}selected{% endif %}>Date (Oldest)</option>
+                        <option value="size_desc" {% if sort_by == 'size_desc' %}selected{% endif %}>Size (Largest)</option>
+                    </select>
+                </form>
+            </div>
+        </div>
+
+        <div class="grid-container" id="gridContainer">
+            <div class="grid" id="grid">
+                {% for file in files %}
+                <div class="item" 
+                     data-path="{{ file.path }}" 
+                     data-type="{{ file.type }}"
+                     data-name="{{ file.name }}"
+                     data-src="{% if view_mode == 'trash' %}/trash_media/{{ file.name }}{% else %}/media/{{ file.path }}{% endif %}">
+                    
+                    <div class="mini-delete-btn" onclick="deleteSingle(event, '{{ file.path }}')">×</div>
+
+                    <div class="inner">
+                        {% if file.type == 'video' %}
+                            <video src="{% if view_mode == 'trash' %}/trash_media/{{ file.name }}{% else %}/media/{{ file.path }}{% endif %}#t=0.1" preload="metadata"></video>
+                            <span class="vid-icon">▶</span>
+                        {% else %}
+                            <img src="{% if view_mode == 'trash' %}/trash_media/{{ file.name }}{% else %}/media/{{ file.path }}{% endif %}" loading="lazy">
+                        {% endif %}
+                    </div>
+                    <div class="meta">
+                        <span class="fname">{{ file.name }}</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<div id="lightbox" class="lightbox">
+    <span class="close-btn" onclick="closeLightbox()">&times;</span>
+    <div class="lightbox-content">
+        <img id="lb-img">
+        <video id="lb-vid" controls></video>
+    </div>
+    <div class="lb-controls">
+        <button onclick="prevMedia()">&#10094;</button>
+        
+        <div style="display:flex; gap:15px;">
+            <button onclick="rotateCurrent()" id="rotateBtn" class="lb-action-btn" style="background:rgba(0,123,255,0.6) !important;" title="Rotate 90°">⟳</button>
+            <button onclick="deleteCurrentLightbox()" class="lb-action-btn" title="Delete">🗑</button>
+        </div>
+
+        <button onclick="nextMedia()">&#10095;</button>
+    </div>
+</div>
+
+<div id="selectionBox"></div>
+
+<script>
+const grid = document.getElementById('grid');
+const selectionBox = document.getElementById('selectionBox');
+let selectedFiles = new Set();
+let isDragging = false;
+let startX, startY;
+const viewMode = "{{ view_mode }}";
+const currentFolder = "{{ selected_folder }}";
+let longPressTimer;
+let isLongPress = false;
+
+// --- UPLOAD LOGIC ---
+
+function handleUpload(files) {
+    if (files.length === 0) return;
+    const formData = new FormData();
+    formData.append('folder', currentFolder);
+    for (let i = 0; i < files.length; i++) {
+        formData.append('files[]', files[i]);
+    }
+    document.getElementById('uploadOverlay').style.display = 'flex';
+    fetch('/upload', { method: 'POST', body: formData })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') location.reload();
+        else {
+            alert('Upload failed: ' + (data.error || 'Unknown error'));
+            document.getElementById('uploadOverlay').style.display = 'none';
+        }
+    })
+    .catch(err => {
+        alert('Upload Error');
+        document.getElementById('uploadOverlay').style.display = 'none';
+    });
+}
+
+// --- ROTATE LOGIC ---
+function rotateCurrent() {
+    if(currentIndex === -1) return;
+    const item = allItems[currentIndex];
+    const path = item.dataset.path;
+    const rotateBtn = document.getElementById('rotateBtn');
+    
+    // Disable button briefly
+    rotateBtn.disabled = true;
+    rotateBtn.style.opacity = "0.5";
+
+    fetch("/rotate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ file: path, view_mode: viewMode })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if(data.status === "rotated") {
+            // Update Lightbox
+            const newSrc = data.new_url;
+            document.getElementById('lb-img').src = newSrc;
+            
+            // Update Grid Item
+            const gridImg = item.querySelector('img');
+            if(gridImg) gridImg.src = newSrc;
+            item.dataset.src = newSrc; // Update dataset for next open
+        } else {
+            alert("Error: " + data.error);
+        }
+    })
+    .finally(() => {
+        rotateBtn.disabled = false;
+        rotateBtn.style.opacity = "1";
+    });
+}
+
+// --- INTERACTION LOGIC ---
+
+document.querySelectorAll(".item").forEach((el, index) => {
+    el.addEventListener("click", (e) => {
+        if (e.target.classList.contains('mini-delete-btn')) return;
+        if (isLongPress) { isLongPress = false; return; }
+        if (e.ctrlKey || e.metaKey || selectedFiles.size > 0) {
+            toggleSelect(el);
+        } else {
+            openLightbox(index);
+        }
+    });
+
+    el.addEventListener("touchstart", (e) => {
+        isLongPress = false;
+        longPressTimer = setTimeout(() => {
+            isLongPress = true;
+            toggleSelect(el);
+            if(navigator.vibrate) navigator.vibrate(50);
+        }, 500);
+    });
+
+    el.addEventListener("touchend", () => clearTimeout(longPressTimer));
+    el.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+    el.addEventListener("mousedown", (e) => { if(e.ctrlKey || e.metaKey) toggleSelect(el); });
+});
+
+function toggleSelect(el) {
+    const path = el.dataset.path;
+    if (selectedFiles.has(path)) {
+        selectedFiles.delete(path);
+        el.classList.remove("selected");
+    } else {
+        selectedFiles.add(path);
+        el.classList.add("selected");
+    }
+    updateCount();
+}
+
+function updateCount() {
+    document.getElementById("count").innerText = selectedFiles.size + " selected";
+}
+
+// --- DRAG SELECTION ---
+const container = document.getElementById('gridContainer');
+container.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.item')) return; 
+    isDragging = true;
+    startX = e.pageX;
+    startY = e.pageY;
+    selectionBox.style.display = 'block';
+    selectionBox.style.width = '0px';
+    selectionBox.style.height = '0px';
+    selectionBox.style.left = startX + 'px';
+    selectionBox.style.top = startY + 'px';
+});
+
+document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const currentX = e.pageX;
+    const currentY = e.pageY;
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    const left = Math.min(currentX, startX);
+    const top = Math.min(currentY, startY);
+    selectionBox.style.width = width + 'px';
+    selectionBox.style.height = height + 'px';
+    selectionBox.style.left = left + 'px';
+    selectionBox.style.top = top + 'px';
+
+    const boxRect = selectionBox.getBoundingClientRect();
+    document.querySelectorAll('.item').forEach(item => {
+        const itemRect = item.getBoundingClientRect();
+        if (isIntersecting(boxRect, itemRect)) {
+            if (!item.classList.contains('selected')) toggleSelect(item);
+        }
+    });
+});
+
+document.addEventListener('mouseup', () => {
+    isDragging = false;
+    selectionBox.style.display = 'none';
+});
+
+function isIntersecting(r1, r2) {
+    return !(r2.left > r1.right || r2.right < r1.left || r2.top > r1.bottom || r2.bottom < r1.top);
+}
+
+// --- API ACTIONS ---
+function apiCall(url, data) {
+    fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+    }).then(res => res.json()).then(data => {
+        if(data.error) alert(data.error);
+        else location.reload();
+    });
+}
+
+function deleteSelected() {
+    if (!selectedFiles.size) return;
+    if(confirm("Move " + selectedFiles.size + " files to Trash?")) {
+        apiCall("/delete", { files: Array.from(selectedFiles) });
+    }
+}
+function restoreSelected() {
+    if (!selectedFiles.size) return;
+    apiCall("/restore", { files: Array.from(selectedFiles) });
+}
+function permanentDelete() {
+    if (!selectedFiles.size) return;
+    if(confirm("Permanently delete " + selectedFiles.size + " files?")) {
+        apiCall("/permanent_delete", { files: Array.from(selectedFiles) });
+    }
+}
+function deleteSingle(event, path) {
+    event.stopPropagation(); 
+    const msg = viewMode === 'trash' ? "Delete forever?" : "Move to Trash?";
+    const url = viewMode === 'trash' ? "/permanent_delete" : "/delete";
+    if(confirm(msg)) apiCall(url, { files: [path] });
+}
+function deleteCurrentLightbox() {
+    if(currentIndex === -1) return;
+    const item = allItems[currentIndex];
+    const path = item.dataset.path;
+    const msg = viewMode === 'trash' ? "Delete forever?" : "Move to Trash?";
+    const url = viewMode === 'trash' ? "/permanent_delete" : "/delete";
+    if(confirm(msg)) apiCall(url, { files: [path] });
+}
+
+// --- LIGHTBOX ---
+const lightbox = document.getElementById('lightbox');
+const lbImg = document.getElementById('lb-img');
+const lbVid = document.getElementById('lb-vid');
+const rotateBtn = document.getElementById('rotateBtn');
+let currentIndex = -1;
+const allItems = document.querySelectorAll('.item');
+
+function openLightbox(index) {
+    currentIndex = index;
+    const item = allItems[index];
+    const src = item.dataset.src;
+    const type = item.dataset.type;
+
+    lightbox.style.display = 'flex';
+    
+    if (type === 'video') {
+        lbImg.style.display = 'none';
+        lbVid.style.display = 'block';
+        rotateBtn.style.display = 'none'; // Hide rotate for videos
+        lbVid.src = src;
+        lbVid.play();
+    } else {
+        lbVid.style.display = 'none';
+        lbVid.pause();
+        lbImg.style.display = 'block';
+        rotateBtn.style.display = 'inline-block'; // Show rotate for images
+        lbImg.src = src;
+    }
+}
+
+function closeLightbox() {
+    lightbox.style.display = 'none';
+    lbVid.pause();
+}
+
+function nextMedia() {
+    if (currentIndex < allItems.length - 1) openLightbox(currentIndex + 1);
+}
+
+function prevMedia() {
+    if (currentIndex > 0) openLightbox(currentIndex - 1);
+}
+
+document.addEventListener('keydown', (e) => {
+    if (lightbox.style.display === 'flex') {
+        if (e.key === 'ArrowRight') nextMedia();
+        if (e.key === 'ArrowLeft') prevMedia();
+        if (e.key === 'Escape') closeLightbox();
+        if (e.key === 'Delete') deleteCurrentLightbox();
+    }
+});
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('show');
+}
+</script>
+
+</body>
+</html>
